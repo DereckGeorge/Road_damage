@@ -1,15 +1,11 @@
-import 'dart:convert';
-import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import 'package:camera/camera.dart';
-import 'package:geolocator/geolocator.dart';
-import 'package:http/http.dart' as http;
-import 'package:permission_handler/permission_handler.dart';
 import '../providers/auth_provider.dart';
 import '../providers/damage_provider.dart';
-import '../services/api_service.dart';
-import 'reports_screen.dart';
+import 'edit_photo_screen.dart';
+import 'login_screen.dart';
+import 'rejected_photos_screen.dart';
+import 'survey_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -19,949 +15,487 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  CameraController? _controller;
-  bool _isCameraInitialized = false;
-  Position? _currentPosition;
-  Map<String, dynamic>? _locationDetails;
-  String? _selectedDamageClass;
-  final _roadNameController = TextEditingController();
-  final _commentController = TextEditingController();
-  XFile? _capturedImage;
-  bool _isLoading = false;
-  bool _isLocationLoading = false;
+  int _selectedIndex = 0;
 
   @override
   void initState() {
     super.initState();
-    _initializeCamera();
-    _getCurrentLocation();
-    _loadDamageClasses();
+    _loadAssignedRoads();
   }
 
-  @override
-  void dispose() {
-    _controller?.dispose();
-    _roadNameController.dispose();
-    _commentController.dispose();
-    super.dispose();
-  }
-
-  Future<void> _initializeCamera() async {
-    final cameras = await availableCameras();
-    if (cameras.isEmpty) return;
-
-    _controller = CameraController(
-      cameras.first,
-      ResolutionPreset.medium,
-    );
-
-    try {
-      await _controller!.initialize();
-      if (mounted) {
-        setState(() => _isCameraInitialized = true);
-      }
-    } catch (e) {
-      debugPrint('Error initializing camera: $e');
-    }
-  }
-
-  Future<void> _getCurrentLocation() async {
-    setState(() => _isLocationLoading = true);
-
-    try {
-      print('Checking location service status...');
-
-      // Check if location services are enabled
-      bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
-      if (!serviceEnabled) {
-        print('Location services are disabled');
+  Future<void> _loadAssignedRoads() async {
+    final authProvider = Provider.of<AuthProvider>(context, listen: false);
+    if (authProvider.email != null) {
+      try {
+        await Provider.of<DamageProvider>(context, listen: false)
+            .loadAssignedRoads(authProvider.email!);
+      } catch (e) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text(
-                  'Please enable location services in your device settings.'),
-              duration: Duration(seconds: 5),
-            ),
+            SnackBar(content: Text('Failed to load assigned roads: $e')),
           );
         }
-        return;
       }
+    }
+  }
 
-      print('Requesting location permission...');
-      LocationPermission permission = await Geolocator.checkPermission();
-
-      if (permission == LocationPermission.denied) {
-        permission = await Geolocator.requestPermission();
-        if (permission == LocationPermission.denied) {
-          print('Location permission denied');
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                content: Text(
-                    'Location permission denied. Please enable location access in app settings.'),
-                duration: Duration(seconds: 5),
-              ),
-            );
-          }
-          return;
-        }
+  Future<void> _loadMyPhotos() async {
+    try {
+      await Provider.of<DamageProvider>(context, listen: false).loadReports();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to load reports: $e')),
+        );
       }
+    }
+  }
 
-      if (permission == LocationPermission.deniedForever) {
-        print('Location permission permanently denied');
+  Future<void> _loadRejectedPhotos() async {
+    final authProvider = Provider.of<AuthProvider>(context, listen: false);
+    if (authProvider.email != null) {
+      try {
+        await Provider.of<DamageProvider>(context, listen: false)
+            .loadRejectedPhotos(authProvider.email!);
+      } catch (e) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text(
-                  'Location permission permanently denied. Please enable it in app settings.'),
-              duration: Duration(seconds: 5),
-            ),
+            SnackBar(content: Text('Failed to load rejected photos: $e')),
           );
         }
-        return;
-      }
-
-      print('Getting current position...');
-      final position = await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.high,
-        timeLimit: const Duration(seconds: 30),
-      );
-      print('Position obtained: ${position.latitude}, ${position.longitude}');
-      setState(() => _currentPosition = position);
-
-      // Get address from coordinates using OpenStreetMap Nominatim
-      print('Fetching address from OpenStreetMap...');
-      final response = await http.get(
-        Uri.parse(
-          'https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${position.latitude}&lon=${position.longitude}&zoom=18&addressdetails=1',
-        ),
-      );
-
-      print('OpenStreetMap response status: ${response.statusCode}');
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        print('OpenStreetMap data: $data');
-        setState(() {
-          _locationDetails = {
-            'street': data['address']['road'] ?? '',
-            'city': data['address']['city'] ??
-                data['address']['town'] ??
-                data['address']['village'] ??
-                '',
-            'region': data['address']['state'] ?? '',
-            'country': data['address']['country'] ?? '',
-            'latitude': position.latitude,
-            'longitude': position.longitude,
-          };
-        });
-        print('Location details set: $_locationDetails');
-      } else {
-        print('OpenStreetMap request failed: ${response.body}');
-        // If reverse geocoding fails, still save coordinates
-        setState(() {
-          _locationDetails = {
-            'street': '',
-            'city': '',
-            'region': '',
-            'country': '',
-            'latitude': position.latitude,
-            'longitude': position.longitude,
-          };
-        });
-        print('Location details set with coordinates only: $_locationDetails');
-      }
-    } catch (e) {
-      print('Error getting location: $e');
-      debugPrint('Error getting location: $e');
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error getting location: $e'),
-            duration: const Duration(seconds: 5),
-          ),
-        );
-      }
-    } finally {
-      if (mounted) {
-        setState(() => _isLocationLoading = false);
       }
     }
   }
 
-  Future<void> _loadDamageClasses() async {
-    try {
-      await Provider.of<DamageProvider>(context, listen: false)
-          .loadDamageClasses();
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Failed to load damage classes')),
-        );
-      }
-    }
-  }
+  void _onItemTapped(int index) {
+    if (_selectedIndex == index) return;
 
-  Future<void> _takePicture() async {
-    if (_controller == null || !_controller!.value.isInitialized) return;
-
-    try {
-      setState(() => _isLoading = true);
-      final image = await _controller!.takePicture();
-      setState(() => _capturedImage = image);
-    } catch (e) {
-      debugPrint('Error taking picture: $e');
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error taking picture: $e')),
-        );
-      }
-    } finally {
-      if (mounted) {
-        setState(() => _isLoading = false);
-      }
-    }
-  }
-
-  Future<String> _imageToBase64() async {
-    if (_capturedImage == null) return '';
-
-    try {
-      final imageBytes = await _capturedImage!.readAsBytes();
-      final base64Image = base64Encode(imageBytes);
-      // Return as data URL format like the web version
-      return 'data:image/jpeg;base64,$base64Image';
-    } catch (e) {
-      debugPrint('Error converting image to base64: $e');
-      return '';
-    }
-  }
-
-  Future<void> _submitReport() async {
-    if (_capturedImage == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please take a picture first')),
-      );
-      return;
-    }
-
-    if (_selectedDamageClass == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please select a damage class')),
-      );
-      return;
-    }
-
-    if (_roadNameController.text.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please enter road name')),
-      );
-      return;
-    }
-
-    if (_commentController.text.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please enter a comment')),
-      );
-      return;
-    }
-
-    if (_locationDetails == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-            content: Text(
-                'Location not available. Please enable location permissions.')),
-      );
-      return;
-    }
-
-    // Check if we have at least coordinates
-    if (_locationDetails!['latitude'] == null ||
-        _locationDetails!['longitude'] == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-            content: Text(
-                'GPS coordinates not available. Please check location settings.')),
-      );
-      return;
-    }
-
-    setState(() => _isLoading = true);
-
-    try {
-      final authProvider = Provider.of<AuthProvider>(context, listen: false);
-      final imageData = await _imageToBase64();
-
-      print('Image data length: ${imageData.length}');
-      print('Image data preview: ${imageData.substring(0, 100)}...');
-
-      await Provider.of<DamageProvider>(context, listen: false).submitReport(
-        userId: authProvider.userId!,
-        fullname: authProvider.fullname!,
-        email: authProvider.email!,
-        imageData: imageData,
-        location: _locationDetails!,
-        roadName: _roadNameController.text,
-        damageClass: _selectedDamageClass!,
-        comment: _commentController.text,
-      );
-
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Report submitted successfully')),
-        );
-        _resetForm();
-      }
-    } catch (e) {
-      print('Error submitting report: $e');
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to submit report: $e')),
-        );
-      }
-    } finally {
-      if (mounted) {
-        setState(() => _isLoading = false);
-      }
-    }
-  }
-
-  void _resetForm() {
     setState(() {
-      _capturedImage = null;
-      _selectedDamageClass = null;
-      _roadNameController.clear();
-      _commentController.clear();
+      _selectedIndex = index;
     });
+
+    final damageProvider = Provider.of<DamageProvider>(context, listen: false);
+
+    if (index == 1 && damageProvider.reports.isEmpty) {
+      _loadMyPhotos();
+    } else if (index == 2 && damageProvider.rejectedPhotos.isEmpty) {
+      _loadRejectedPhotos();
+    }
+  }
+
+  void _logout() {
+    Provider.of<AuthProvider>(context, listen: false).logout();
+    Navigator.of(context).pushAndRemoveUntil(
+      MaterialPageRoute(builder: (context) => const LoginScreen()),
+      (route) => false,
+    );
   }
 
   @override
   Widget build(BuildContext context) {
-    final damageClasses = Provider.of<DamageProvider>(context).damageClasses;
-    final screenWidth = MediaQuery.of(context).size.width;
-    final isSmallScreen = screenWidth < 600;
+    const List<String> titles = [
+      'Assigned Roads',
+      'My Photos',
+      'Rejected Photos'
+    ];
 
     return Scaffold(
-      backgroundColor: Colors.grey[50],
       appBar: AppBar(
-        title: const Text('Road Damage Survey'),
-        elevation: 0,
-        shape: const RoundedRectangleBorder(
-          borderRadius: BorderRadius.vertical(
-            bottom: Radius.circular(20),
-          ),
-        ),
-      ),
-      body: _controller == null
-          ? Container(
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  begin: Alignment.topCenter,
-                  end: Alignment.bottomCenter,
-                  colors: [
-                    Colors.blue[50]!,
-                    Colors.white,
-                  ],
-                ),
-              ),
-              child: const Center(
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    CircularProgressIndicator(),
-                    SizedBox(height: 16),
-                    Text(
-                      'Initializing camera...',
-                      style: TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            )
-          : Column(
-              children: [
-                Expanded(
-                  child: Container(
-                    decoration: BoxDecoration(
-                      gradient: LinearGradient(
-                        begin: Alignment.topCenter,
-                        end: Alignment.bottomCenter,
-                        colors: [
-                          Colors.blue[50]!,
-                          Colors.white,
-                        ],
-                      ),
-                    ),
-                    child: SingleChildScrollView(
-                      padding: const EdgeInsets.all(16),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          // Camera Preview
-                          Container(
-                            height: 300,
-                            decoration: BoxDecoration(
-                              borderRadius: BorderRadius.circular(16),
-                              boxShadow: [
-                                BoxShadow(
-                                  color: Colors.black.withOpacity(0.1),
-                                  blurRadius: 10,
-                                  offset: const Offset(0, 4),
-                                ),
-                              ],
-                            ),
-                            child: ClipRRect(
-                              borderRadius: BorderRadius.circular(16),
-                              child: _capturedImage != null
-                                  ? Image.file(
-                                      File(_capturedImage!.path),
-                                      fit: BoxFit.cover,
-                                    )
-                                  : CameraPreview(_controller!),
-                            ),
-                          ),
-                          const SizedBox(height: 20),
-
-                          // Camera Controls
-                          Container(
-                            padding: const EdgeInsets.all(16),
-                            decoration: BoxDecoration(
-                              color: Colors.white,
-                              borderRadius: BorderRadius.circular(12),
-                              boxShadow: [
-                                BoxShadow(
-                                  color: Colors.black.withOpacity(0.05),
-                                  blurRadius: 5,
-                                  offset: const Offset(0, 2),
-                                ),
-                              ],
-                            ),
-                            child: Row(
-                              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                              children: [
-                                Expanded(
-                                  child: ElevatedButton.icon(
-                                    onPressed: _isLoading ? null : _takePicture,
-                                    icon: _isLoading
-                                        ? const SizedBox(
-                                            width: 16,
-                                            height: 16,
-                                            child: CircularProgressIndicator(
-                                                strokeWidth: 2,
-                                                color: Colors.white),
-                                          )
-                                        : const Icon(Icons.camera_alt),
-                                    label: Text(_isLoading
-                                        ? 'Capturing...'
-                                        : 'Take Photo'),
-                                    style: ElevatedButton.styleFrom(
-                                      backgroundColor: Colors.blue[600],
-                                      foregroundColor: Colors.white,
-                                      padding: const EdgeInsets.symmetric(
-                                          horizontal: 20, vertical: 12),
-                                      shape: RoundedRectangleBorder(
-                                        borderRadius: BorderRadius.circular(8),
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                                if (_capturedImage != null) ...[
-                                  const SizedBox(width: 12),
-                                  Expanded(
-                                    child: ElevatedButton.icon(
-                                      onPressed: () =>
-                                          setState(() => _capturedImage = null),
-                                      icon: const Icon(Icons.refresh),
-                                      label: const Text('Retake'),
-                                      style: ElevatedButton.styleFrom(
-                                        backgroundColor: Colors.orange[600],
-                                        foregroundColor: Colors.white,
-                                        padding: const EdgeInsets.symmetric(
-                                            horizontal: 20, vertical: 12),
-                                        shape: RoundedRectangleBorder(
-                                          borderRadius:
-                                              BorderRadius.circular(8),
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                                ],
-                              ],
-                            ),
-                          ),
-                          const SizedBox(height: 20),
-
-                          // Location Information
-                          if (_locationDetails != null ||
-                              _isLocationLoading) ...[
-                            Card(
-                              child: Container(
-                                decoration: BoxDecoration(
-                                  borderRadius: BorderRadius.circular(12),
-                                  gradient: LinearGradient(
-                                    begin: Alignment.topLeft,
-                                    end: Alignment.bottomRight,
-                                    colors: [
-                                      Colors.blue[50]!,
-                                      Colors.white,
-                                    ],
-                                  ),
-                                ),
-                                child: Padding(
-                                  padding: const EdgeInsets.all(16),
-                                  child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      Row(
-                                        children: [
-                                          Container(
-                                            padding: const EdgeInsets.all(8),
-                                            decoration: BoxDecoration(
-                                              color: Colors.blue[100],
-                                              borderRadius:
-                                                  BorderRadius.circular(8),
-                                            ),
-                                            child: Icon(Icons.location_on,
-                                                color: Colors.blue[600]),
-                                          ),
-                                          const SizedBox(width: 12),
-                                          const Expanded(
-                                            child: Text(
-                                              'Location Details',
-                                              style: TextStyle(
-                                                fontSize: 18,
-                                                fontWeight: FontWeight.bold,
-                                              ),
-                                            ),
-                                          ),
-                                          if (_isLocationLoading)
-                                            const SizedBox(
-                                              width: 20,
-                                              height: 20,
-                                              child: CircularProgressIndicator(
-                                                  strokeWidth: 2),
-                                            )
-                                          else
-                                            IconButton(
-                                              onPressed: _getCurrentLocation,
-                                              icon: const Icon(Icons.refresh),
-                                              tooltip: 'Refresh Location',
-                                            ),
-                                        ],
-                                      ),
-                                      const SizedBox(height: 12),
-                                      if (_isLocationLoading)
-                                        const Text('Getting location...')
-                                      else if (_locationDetails != null) ...[
-                                        _buildLocationRow('Street',
-                                            _locationDetails!['street']),
-                                        _buildLocationRow(
-                                            'City', _locationDetails!['city']),
-                                        _buildLocationRow('Region',
-                                            _locationDetails!['region']),
-                                        _buildLocationRow('Country',
-                                            _locationDetails!['country']),
-                                        Container(
-                                          padding: const EdgeInsets.all(8),
-                                          decoration: BoxDecoration(
-                                            color: Colors.blue[100],
-                                            borderRadius:
-                                                BorderRadius.circular(8),
-                                          ),
-                                          child: Row(
-                                            children: [
-                                              Icon(Icons.gps_fixed,
-                                                  size: 16,
-                                                  color: Colors.blue[700]),
-                                              const SizedBox(width: 8),
-                                              Expanded(
-                                                child: Text(
-                                                  'Coordinates: [${_locationDetails!['latitude'].toStringAsFixed(5)}, ${_locationDetails!['longitude'].toStringAsFixed(5)}]',
-                                                  style: TextStyle(
-                                                    fontWeight: FontWeight.bold,
-                                                    color: Colors.blue[700],
-                                                  ),
-                                                ),
-                                              ),
-                                            ],
-                                          ),
-                                        ),
-                                      ],
-                                    ],
-                                  ),
-                                ),
-                              ),
-                            ),
-                            const SizedBox(height: 20),
-                          ],
-
-                          // Report Form
-                          Card(
-                            child: Container(
-                              decoration: BoxDecoration(
-                                borderRadius: BorderRadius.circular(12),
-                                gradient: LinearGradient(
-                                  begin: Alignment.topLeft,
-                                  end: Alignment.bottomRight,
-                                  colors: [
-                                    Colors.white,
-                                    Colors.grey[50]!,
-                                  ],
-                                ),
-                              ),
-                              child: Padding(
-                                padding: const EdgeInsets.all(20),
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Row(
-                                      children: [
-                                        Container(
-                                          padding: const EdgeInsets.all(8),
-                                          decoration: BoxDecoration(
-                                            color: Colors.blue[100],
-                                            borderRadius:
-                                                BorderRadius.circular(8),
-                                          ),
-                                          child: Icon(Icons.assignment,
-                                              color: Colors.blue[600]),
-                                        ),
-                                        const SizedBox(width: 12),
-                                        const Text(
-                                          'Report Details',
-                                          style: TextStyle(
-                                            fontSize: 18,
-                                            fontWeight: FontWeight.bold,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                    const SizedBox(height: 20),
-
-                                    // Road Name
-                                    TextField(
-                                      controller: _roadNameController,
-                                      decoration: const InputDecoration(
-                                        labelText: 'Road / Street Name',
-                                        prefixIcon: Icon(Icons.map),
-                                      ),
-                                    ),
-                                    const SizedBox(height: 16),
-
-                                    // Damage Class Dropdown
-                                    DropdownButtonFormField<String>(
-                                      value: _selectedDamageClass,
-                                      decoration: const InputDecoration(
-                                        labelText: 'Damage Class',
-                                        prefixIcon: Icon(Icons.construction),
-                                      ),
-                                      items: damageClasses
-                                          .map((DamageClass damageClass) {
-                                        return DropdownMenuItem<String>(
-                                          value: damageClass.damageClass,
-                                          child: Column(
-                                            crossAxisAlignment:
-                                                CrossAxisAlignment.start,
-                                            mainAxisSize: MainAxisSize.min,
-                                            children: [
-                                              Text(
-                                                'Class ${damageClass.damageClass}',
-                                                style: const TextStyle(
-                                                    fontWeight:
-                                                        FontWeight.bold),
-                                              ),
-                                              Text(
-                                                damageClass.description,
-                                                style: TextStyle(
-                                                  fontSize: 12,
-                                                  color: Colors.grey[600],
-                                                ),
-                                                overflow: TextOverflow.ellipsis,
-                                              ),
-                                              Text(
-                                                '${damageClass.repairCost.toStringAsFixed(0)} TZS',
-                                                style: TextStyle(
-                                                  fontSize: 11,
-                                                  color: Colors.blue[600],
-                                                  fontWeight: FontWeight.w500,
-                                                ),
-                                              ),
-                                            ],
-                                          ),
-                                        );
-                                      }).toList(),
-                                      onChanged: (String? value) {
-                                        setState(
-                                            () => _selectedDamageClass = value);
-                                      },
-                                    ),
-                                    const SizedBox(height: 16),
-
-                                    // Selected Damage Class Info
-                                    if (_selectedDamageClass != null) ...[
-                                      Container(
-                                        padding: const EdgeInsets.all(16),
-                                        decoration: BoxDecoration(
-                                          gradient: LinearGradient(
-                                            begin: Alignment.topLeft,
-                                            end: Alignment.bottomRight,
-                                            colors: [
-                                              Colors.blue[50]!,
-                                              Colors.blue[100]!,
-                                            ],
-                                          ),
-                                          borderRadius:
-                                              BorderRadius.circular(12),
-                                          border: Border.all(
-                                            color: Colors.blue[200]!,
-                                            width: 1,
-                                          ),
-                                        ),
-                                        child: Column(
-                                          crossAxisAlignment:
-                                              CrossAxisAlignment.start,
-                                          children: [
-                                            Row(
-                                              children: [
-                                                Icon(Icons.info_outline,
-                                                    color: Colors.blue[600],
-                                                    size: 20),
-                                                const SizedBox(width: 8),
-                                                Text(
-                                                  'Selected Damage Class',
-                                                  style: TextStyle(
-                                                    fontSize: 14,
-                                                    fontWeight: FontWeight.bold,
-                                                    color: Colors.blue[800],
-                                                  ),
-                                                ),
-                                              ],
-                                            ),
-                                            const SizedBox(height: 8),
-                                            Text(
-                                              'Class $_selectedDamageClass',
-                                              style: const TextStyle(
-                                                fontSize: 16,
-                                                fontWeight: FontWeight.bold,
-                                              ),
-                                            ),
-                                            const SizedBox(height: 4),
-                                            Text(
-                                              damageClasses
-                                                  .firstWhere((dc) =>
-                                                      dc.damageClass ==
-                                                      _selectedDamageClass)
-                                                  .description,
-                                              style:
-                                                  const TextStyle(fontSize: 14),
-                                            ),
-                                            const SizedBox(height: 8),
-                                            Container(
-                                              padding:
-                                                  const EdgeInsets.symmetric(
-                                                      horizontal: 12,
-                                                      vertical: 6),
-                                              decoration: BoxDecoration(
-                                                color: Colors.blue[200],
-                                                borderRadius:
-                                                    BorderRadius.circular(16),
-                                              ),
-                                              child: Text(
-                                                '${damageClasses.firstWhere((dc) => dc.damageClass == _selectedDamageClass).repairCost.toStringAsFixed(0)} TZS',
-                                                style: TextStyle(
-                                                  fontSize: 12,
-                                                  fontWeight: FontWeight.bold,
-                                                  color: Colors.blue[800],
-                                                ),
-                                              ),
-                                            ),
-                                          ],
-                                        ),
-                                      ),
-                                      const SizedBox(height: 16),
-                                    ],
-
-                                    // Comments
-                                    TextField(
-                                      controller: _commentController,
-                                      decoration: const InputDecoration(
-                                        labelText: 'Describe the damage',
-                                        prefixIcon: Icon(Icons.comment),
-                                        alignLabelWithHint: true,
-                                      ),
-                                      maxLines: 3,
-                                    ),
-                                    const SizedBox(height: 24),
-
-                                    // Submit Button
-                                    Container(
-                                      width: double.infinity,
-                                      decoration: BoxDecoration(
-                                        borderRadius: BorderRadius.circular(12),
-                                        gradient: LinearGradient(
-                                          colors: [
-                                            Colors.green[600]!,
-                                            Colors.green[700]!,
-                                          ],
-                                        ),
-                                        boxShadow: [
-                                          BoxShadow(
-                                            color:
-                                                Colors.green.withOpacity(0.3),
-                                            blurRadius: 8,
-                                            offset: const Offset(0, 4),
-                                          ),
-                                        ],
-                                      ),
-                                      child: ElevatedButton.icon(
-                                        onPressed:
-                                            _isLoading ? null : _submitReport,
-                                        icon: _isLoading
-                                            ? const SizedBox(
-                                                width: 16,
-                                                height: 16,
-                                                child:
-                                                    CircularProgressIndicator(
-                                                        strokeWidth: 2,
-                                                        color: Colors.white),
-                                              )
-                                            : const Icon(Icons.send),
-                                        label: Text(_isLoading
-                                            ? 'Submitting...'
-                                            : 'Submit Report'),
-                                        style: ElevatedButton.styleFrom(
-                                          backgroundColor: Colors.transparent,
-                                          foregroundColor: Colors.white,
-                                          shadowColor: Colors.transparent,
-                                          padding: const EdgeInsets.symmetric(
-                                              vertical: 16),
-                                          textStyle:
-                                              const TextStyle(fontSize: 16),
-                                        ),
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-                // Bottom Navigation
-                Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.black.withOpacity(0.1),
-                        spreadRadius: 1,
-                        blurRadius: 10,
-                        offset: const Offset(0, -2),
-                      ),
-                    ],
-                  ),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                    children: [
-                      Expanded(
-                        child: InkWell(
-                          onTap: () {
-                            Navigator.push(
-                              context,
-                              MaterialPageRoute(
-                                  builder: (_) => const ReportsScreen()),
-                            );
-                          },
-                          borderRadius: BorderRadius.circular(8),
-                          child: Padding(
-                            padding: const EdgeInsets.all(8),
-                            child: Column(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Icon(Icons.history, color: Colors.blue[600]),
-                                const SizedBox(height: 4),
-                                Text(
-                                  'View Reports',
-                                  style: TextStyle(
-                                    fontSize: 12,
-                                    color: Colors.blue[600],
-                                    fontWeight: FontWeight.w500,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                      ),
-                      Expanded(
-                        child: InkWell(
-                          onTap: () async {
-                            await Provider.of<AuthProvider>(context,
-                                    listen: false)
-                                .logout();
-                            if (mounted) {
-                              Navigator.of(context)
-                                  .pushReplacementNamed('/login');
-                            }
-                          },
-                          borderRadius: BorderRadius.circular(8),
-                          child: Padding(
-                            padding: const EdgeInsets.all(8),
-                            child: Column(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Icon(Icons.logout, color: Colors.red[600]),
-                                const SizedBox(height: 4),
-                                Text(
-                                  'Logout',
-                                  style: TextStyle(
-                                    fontSize: 12,
-                                    color: Colors.red[600],
-                                    fontWeight: FontWeight.w500,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-    );
-  }
-
-  Widget _buildLocationRow(String label, String value) {
-    if (value.isEmpty) return const SizedBox.shrink();
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 8),
-      child: Row(
-        children: [
-          Text(
-            '$label: ',
-            style: TextStyle(
-              fontWeight: FontWeight.w500,
-              color: Colors.grey[700],
-            ),
-          ),
-          Expanded(
-            child: Text(
-              value,
-              style: const TextStyle(fontWeight: FontWeight.w500),
-            ),
+        title: Text(titles[_selectedIndex]),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.logout),
+            tooltip: 'Logout',
+            onPressed: _logout,
           ),
         ],
       ),
+      body: _buildBody(),
+      bottomNavigationBar: BottomNavigationBar(
+        items: const <BottomNavigationBarItem>[
+          BottomNavigationBarItem(
+            icon: Icon(Icons.assignment),
+            label: 'Assigned Roads',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.photo_library),
+            label: 'My Photos',
+          ),
+          BottomNavigationBarItem(
+            icon: Icon(Icons.report_problem),
+            label: 'Rejected Photos',
+          ),
+        ],
+        currentIndex: _selectedIndex,
+        onTap: _onItemTapped,
+      ),
+    );
+  }
+
+  Widget _buildBody() {
+    switch (_selectedIndex) {
+      case 0:
+        return _AssignedRoadsView(
+          onBuildStatusButton: (road) => _buildStatusButton(road),
+        );
+      case 1:
+        return const _MyPhotosView();
+      case 2:
+        return const _RejectedPhotosView();
+      default:
+        return const Center(child: Text('Something went wrong'));
+    }
+  }
+
+  Widget _buildStatusButton(AssignedRoad road) {
+    switch (road.status) {
+      case 'assigned':
+        return ElevatedButton(
+          onPressed: () {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                  content:
+                      Text('This road is awaiting approval from a manager.')),
+            );
+          },
+          style: ElevatedButton.styleFrom(
+            backgroundColor: Colors.orange,
+          ),
+          child: const Text('Awaiting Approval'),
+        );
+      case 'approved':
+      case 'in_progress':
+        return ElevatedButton(
+          onPressed: () {
+            Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (context) => SurveyScreen(roadName: road.roadName),
+              ),
+            );
+          },
+          style: ElevatedButton.styleFrom(backgroundColor: Colors.green),
+          child: const Text('Start Survey'),
+        );
+      default:
+        return Text(road.status,
+            style: const TextStyle(fontWeight: FontWeight.bold));
+    }
+  }
+}
+
+class _AssignedRoadsView extends StatelessWidget {
+  final Widget Function(AssignedRoad) onBuildStatusButton;
+
+  const _AssignedRoadsView({required this.onBuildStatusButton});
+
+  @override
+  Widget build(BuildContext context) {
+    return Consumer<DamageProvider>(
+      builder: (context, damageProvider, child) {
+        if (damageProvider.isLoading && damageProvider.assignedRoads.isEmpty) {
+          return const Center(child: CircularProgressIndicator());
+        }
+
+        if (damageProvider.assignedRoads.isEmpty) {
+          return const Center(child: Text('No roads assigned.'));
+        }
+
+        return ListView.builder(
+          itemCount: damageProvider.assignedRoads.length,
+          itemBuilder: (context, index) {
+            final road = damageProvider.assignedRoads[index];
+            return Card(
+              margin: const EdgeInsets.all(8.0),
+              child: ListTile(
+                title: Text(road.roadName),
+                subtitle: Text('Status: ${road.status}'),
+                trailing: onBuildStatusButton(road),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+}
+
+class _MyPhotosView extends StatefulWidget {
+  const _MyPhotosView();
+
+  @override
+  State<_MyPhotosView> createState() => _MyPhotosViewState();
+}
+
+class _MyPhotosViewState extends State<_MyPhotosView> {
+  String? _selectedClass;
+  String? _selectedStatus;
+  final _roadNameController = TextEditingController();
+  DateTime? _startDate;
+  DateTime? _endDate;
+
+  @override
+  void dispose() {
+    _roadNameController.dispose();
+    super.dispose();
+  }
+
+  void _resetFilters() {
+    setState(() {
+      _selectedClass = null;
+      _selectedStatus = null;
+      _roadNameController.clear();
+      _startDate = null;
+      _endDate = null;
+    });
+  }
+
+  Future<void> _selectDate(BuildContext context, bool isStart) async {
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: DateTime.now(),
+      firstDate: DateTime(2020),
+      lastDate: DateTime.now().add(const Duration(days: 365)),
+    );
+    if (picked != null) {
+      setState(() {
+        if (isStart) {
+          _startDate = picked;
+        } else {
+          _endDate = picked;
+        }
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final authProvider = Provider.of<AuthProvider>(context, listen: false);
+    final damageProvider = Provider.of<DamageProvider>(context);
+
+    final damageClasses =
+        damageProvider.damageClasses.map((e) => e.damageClass).toSet().toList();
+    final statuses =
+        damageProvider.reports.map((e) => e.approvalStatus).toSet().toList();
+
+    final myPhotos = damageProvider
+        .getFilteredReports(
+          damageClass: _selectedClass,
+          status: _selectedStatus,
+          roadName: _roadNameController.text,
+          startDate: _startDate,
+          endDate: _endDate,
+        )
+        .where((report) => report.email == authProvider.email)
+        .toList();
+
+    return Column(
+      children: [
+        // Filter UI
+        Padding(
+          padding: const EdgeInsets.all(8.0),
+          child: ExpansionTile(
+            title: const Text('Filters'),
+            children: [
+              Padding(
+                padding: const EdgeInsets.all(8.0),
+                child: Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    // ... filter widgets ...
+                    TextField(
+                      controller: _roadNameController,
+                      decoration: const InputDecoration(labelText: 'Road Name'),
+                      onChanged: (value) => setState(() {}),
+                    ),
+                    DropdownButton<String>(
+                      value: _selectedClass,
+                      hint: const Text('Filter by Class'),
+                      onChanged: (value) =>
+                          setState(() => _selectedClass = value),
+                      items: damageClasses
+                          .map(
+                              (e) => DropdownMenuItem(value: e, child: Text(e)))
+                          .toList(),
+                    ),
+                    DropdownButton<String>(
+                      value: _selectedStatus,
+                      hint: const Text('Filter by Status'),
+                      onChanged: (value) =>
+                          setState(() => _selectedStatus = value),
+                      items: statuses
+                          .map(
+                              (e) => DropdownMenuItem(value: e, child: Text(e)))
+                          .toList(),
+                    ),
+                    ElevatedButton(
+                      onPressed: () => _selectDate(context, true),
+                      child: Text(_startDate == null
+                          ? 'Start Date'
+                          : 'From: ${_startDate!.toLocal().toString().split(' ')[0]}'),
+                    ),
+                    ElevatedButton(
+                      onPressed: () => _selectDate(context, false),
+                      child: Text(_endDate == null
+                          ? 'End Date'
+                          : 'To: ${_endDate!.toLocal().toString().split(' ')[0]}'),
+                    ),
+                    ElevatedButton(
+                      onPressed: _resetFilters,
+                      child: const Text('Reset'),
+                    )
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+
+        // Photo List
+        Expanded(
+          child: Consumer<DamageProvider>(
+            builder: (context, damageProvider, child) {
+              if (damageProvider.isLoading && damageProvider.reports.isEmpty) {
+                return const Center(child: CircularProgressIndicator());
+              }
+
+              if (myPhotos.isEmpty) {
+                return const Center(
+                    child: Text('No photos match your criteria.'));
+              }
+
+              return ListView.builder(
+                itemCount: myPhotos.length,
+                itemBuilder: (context, index) {
+                  final photo = myPhotos[index];
+                  return Card(
+                    margin:
+                        const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    child: ExpansionTile(
+                      leading: SizedBox(
+                        width: 50,
+                        height: 50,
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(8.0),
+                          child: Image.network(
+                            photo.photoUrl,
+                            fit: BoxFit.cover,
+                            loadingBuilder: (context, child, progress) {
+                              if (progress == null) return child;
+                              return const Center(
+                                  child: CircularProgressIndicator());
+                            },
+                            errorBuilder: (context, error, stackTrace) {
+                              return const Icon(Icons.broken_image, size: 50);
+                            },
+                          ),
+                        ),
+                      ),
+                      title: Text(photo.roadName),
+                      subtitle: Text('Status: ${photo.approvalStatus}'),
+                      children: [
+                        Padding(
+                          padding: const EdgeInsets.all(16.0),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              _buildInfoRow('Damage Class:', photo.damageClass),
+                              _buildInfoRow(
+                                  'Date Submitted:',
+                                  photo.dateCreated
+                                      .toLocal()
+                                      .toString()
+                                      .split(' ')[0]),
+                              if (photo.comment.isNotEmpty)
+                                _buildInfoRow('Your Comment:', photo.comment),
+                              if (photo.officerComment != null &&
+                                  photo.officerComment!.isNotEmpty)
+                                _buildInfoRow(
+                                    'Officer Comment:', photo.officerComment!),
+                            ],
+                          ),
+                        )
+                      ],
+                    ),
+                  );
+                },
+              );
+            },
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildInfoRow(String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4.0),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(label, style: const TextStyle(fontWeight: FontWeight.bold)),
+          const SizedBox(width: 8),
+          Expanded(child: Text(value)),
+        ],
+      ),
+    );
+  }
+}
+
+class _RejectedPhotosView extends StatelessWidget {
+  const _RejectedPhotosView();
+
+  @override
+  Widget build(BuildContext context) {
+    return Consumer<DamageProvider>(
+      builder: (context, damageProvider, child) {
+        if (damageProvider.isLoading && damageProvider.rejectedPhotos.isEmpty) {
+          return const Center(child: CircularProgressIndicator());
+        }
+
+        if (damageProvider.rejectedPhotos.isEmpty) {
+          return const Center(child: Text('You have no rejected photos.'));
+        }
+
+        return ListView.builder(
+          itemCount: damageProvider.rejectedPhotos.length,
+          itemBuilder: (context, index) {
+            final photo = damageProvider.rejectedPhotos[index];
+            return Card(
+              margin: const EdgeInsets.all(8.0),
+              child: Padding(
+                padding: const EdgeInsets.all(8.0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Image.network(photo.photoUrl, fit: BoxFit.cover),
+                    const SizedBox(height: 8),
+                    Text('Road: ${photo.roadName}',
+                        style: const TextStyle(fontWeight: FontWeight.bold)),
+                    Text('Damage Class: ${photo.damageClass}'),
+                    if (photo.officerComment != null &&
+                        photo.officerComment!.isNotEmpty)
+                      Text('Officer Comment: ${photo.officerComment}'),
+                    const SizedBox(height: 8),
+                    ElevatedButton(
+                      onPressed: () {
+                        Navigator.of(context).push(
+                          MaterialPageRoute(
+                            builder: (context) => EditPhotoScreen(
+                              reportToEdit: photo,
+                            ),
+                          ),
+                        );
+                      },
+                      child: const Text('Edit Details'),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
     );
   }
 }
